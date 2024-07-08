@@ -1,0 +1,24 @@
+[tool.poetry]
+name = "pythonproject"
+version = "0.1.0"
+description = "Your project description"
+authors = ["Maksim <maxikpetlitskii@gmail.com>"]
+readme = "README.md"
+[tool.poetry.dependencies]
+python = "^3.12"
+selenium = "^4.22.0"
+webdriver-manager = "^4.0.1"
+selenium-stealth = "^1.0.6"
+undetected-chromedriver = "^3.5.5"
+setuptools = "^70.2.0"
+pyppeteer = "^2.0.0"
+pyppeteer-stealth = "^2.7.4"
+playwright = "^1.45.0"
+playwright-stealth = "^1.0.6"
+selenium-wire = "^5.1.0"
+blinker = "1.7.0"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
