@@ -1,11 +1,13 @@
-import undetected_chromedriver as uc
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-import time
-import random
-import os
 import json
+import os
+import random
+import time
+from datetime import datetime, timedelta, timezone
+
+import undetected_chromedriver as uc
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.by import By
+
 
 def get_random_user_agent():
     user_agents = [
@@ -15,6 +17,7 @@ def get_random_user_agent():
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0"
     ]
     return random.choice(user_agents)
+
 
 def create_or_get_profile(profile_name="default"):
     profiles_dir = os.path.join(os.getcwd(), "chrome_profiles")
@@ -42,6 +45,40 @@ def create_or_get_profile(profile_name="default"):
 
     return profile_path, metadata["user_agent"]
 
+
+def random_sleep(min_seconds=1, max_seconds=5):
+    time.sleep(random.randint(min_seconds * 1000, max_seconds * 1000) / 1000)
+
+
+def simulate_human_behavior(driver):
+    window_width = driver.execute_script("return window.innerWidth;")
+    window_height = driver.execute_script("return window.innerHeight;")
+    num_movements = random.randint(1, 5)
+
+    for i in range(num_movements):
+        target_x = random.randint(0, window_width)
+        target_y = random.randint(0, window_height)
+        driver.execute_script(f"""
+            var event = new MouseEvent('mousemove', {{
+                'view': window,
+                'bubbles': true,
+                'cancelable': true,
+                'clientX': {target_x},
+                'clientY': {target_y}
+            }});
+            document.dispatchEvent(event);
+        """)
+
+        sleep_time = random.randint(1000, 2000) / 1000
+        random_sleep(1, 2)
+
+    scroll_y = random.randint(100, min(1000, window_height))
+    driver.execute_script(f"window.scrollTo(0, {scroll_y});")
+
+    sleep_time = random.randint(1000, 5000) / 1000
+    random_sleep()
+
+
 # Получаем путь к профилю и user agent
 profile_path, user_agent = create_or_get_profile("my_profile")
 
@@ -55,59 +92,56 @@ options.add_argument("--disable-popup-blocking")
 options.add_argument("--disable-blink-features=AutomationControlled")
 options.add_argument(f"--user-data-dir={profile_path}")
 options.add_argument("--profile-directory=Default")
+options.add_argument("--lang=de-DE")
+options.add_argument("--timezone=Europe/Berlin")
+
+# Дополнительные параметры для маскировки
+options.add_argument("--disable-infobars")
+options.add_argument("--disable-save-password-bubble")
+options.add_argument("--ignore-certificate-errors")
 
 # Создаем экземпляр драйвера
 driver = uc.Chrome(options=options)
 
 try:
-    # Устанавливаем размер окна
     driver.set_window_size(1366, 768)
 
-    # Дополнительные настройки для маскировки
+    # Маскировка WebDriver
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
-    # Проверяем User-Agent
-    driver.get("https://www.whatismybrowser.com/detect/what-is-my-user-agent/")
-    WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.ID, "detected_value")))
-    detected_user_agent = driver.find_element(By.ID, "detected_value").text
-    print(f"Detected User-Agent: {detected_user_agent}")
-
-    # Эмуляция действий реального пользователя
-    driver.get("https://bot.sannysoft.com/")
-
-    # Ожидаем загрузки страницы
-    WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-
-    # Эмуляция скролла
-    driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-    time.sleep(2)
-
-    # Скролл обратно вверх
-    driver.execute_script("window.scrollTo(0, 0);")
-    time.sleep(2)
-
-    # Эмуляция движения мыши
+    # Рандомизация WebGL
     driver.execute_script("""
-        var event = new MouseEvent('mousemove', {
-            'view': window,
-            'bubbles': true,
-            'cancelable': true,
-            'clientX': Math.floor(Math.random() * window.innerWidth),
-            'clientY': Math.floor(Math.random() * window.innerHeight)
-        });
-        document.dispatchEvent(event);
+    const getParameter = WebGLRenderingContext.getParameter;
+    WebGLRenderingContext.prototype.getParameter = function(parameter) {
+      if (parameter === 37445) {
+        return 'Intel Open Source Technology Center';
+      }
+      if (parameter === 37446) {
+        return 'Mesa DRI Intel(R) Ivybridge Mobile ';
+      }
+      return getParameter(parameter);
+    };
     """)
 
-    # Получаем и выводим текст страницы
-    body_text = driver.find_element(By.TAG_NAME, "body").text
-    print(body_text)
+    # Устанавливаем немецкое время
+    german_time = datetime.now(timezone.utc) + timedelta(hours=1)  # UTC+1 для Германии
+    driver.execute_script(
+        f"Date.prototype.getTimezoneOffset = function() {{ return -60; }}; Date.now = function() {{ return new Date({german_time.timestamp() * 1000}).getTime(); }};")
 
-    # Оставляем браузер открытым для проверки
-    input("Нажмите Enter для закрытия браузера...")
+    # Открываем страницу
+    driver.get("https://www.example.com")
+    random_sleep()
 
+    print("Браузер открыт и готов к использованию.")
+    print("Нажмите Ctrl+C для завершения программы.")
+
+    while True:
+        simulate_human_behavior(driver)
+        random_sleep(5, 15)
+
+except KeyboardInterrupt:
+    print("\nПрограмма завершена пользователем.")
 except Exception as e:
     print(f"Произошла ошибка: {e}")
-
 finally:
-    # Закрываем браузер
-    driver.quit()
+    pass
