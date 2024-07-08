@@ -1,0 +1,6 @@
+2024/07/09-01:01:41.567 66a4 Reusing MANIFEST C:\Users\maxik\SKAM_ZOV\pythonProject\chrome_profiles\my_profile\Default\Local Storage\leveldb/MANIFEST-000001
+2024/07/09-01:01:41.575 66a4 Recovering log #3
+2024/07/09-01:01:41.579 66a4 Reusing old log C:\Users\maxik\SKAM_ZOV\pythonProject\chrome_profiles\my_profile\Default\Local Storage\leveldb/000003.log 
+2024/07/09-01:02:45.745 2f1c Level-0 table #5: started
+2024/07/09-01:02:45.749 2f1c Level-0 table #5: 39102 bytes OK
+2024/07/09-01:02:45.750 2f1c Delete type=0 #3
