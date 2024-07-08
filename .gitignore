@@ -30,8 +30,7 @@ venv.bak/
 .DS_Store
 Thumbs.db
 
-# Chrome profiles
-chrome_profiles/
+
 
 # Logs
 *.log
