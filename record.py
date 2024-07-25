@@ -1,23 +1,12 @@
 import asyncio
-import atexit
 import configparser
 import json
 import logging
 import os
-import threading
 import time
 import traceback
-from contextlib import contextmanager
-from typing import Tuple, Union
 
-import undetected_chromedriver as uc
 from pynput import keyboard
-from selenium.common.exceptions import TimeoutException, StaleElementReferenceException, NoSuchElementException, \
-    WebDriverException, NoSuchWindowException
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.events import EventFiringWebDriver, AbstractEventListener
-from selenium.webdriver.support.ui import WebDriverWait
 
 from undetected import UndetectedSetup
 
@@ -32,42 +21,19 @@ DEFAULT_TIMEOUT = int(config.get('Timeouts', 'default', fallback=10))
 LONG_TIMEOUT = int(config.get('Timeouts', 'long', fallback=30))
 
 
-class CustomChrome(uc.Chrome):
-    def __del__(self):
-        try:
-            self.service.stop()
-        except Exception:
-            pass
-        try:
-            self.quit()
-        except Exception:
-            pass
-
-
-class ElementCache:
-    def __init__(self):
-        self.cache = {}
-
-    def get(self, driver, locator):
-        key = str(locator)
-        if key not in self.cache:
-            self.cache[key] = driver.find_element(*locator)
-        return self.cache[key]
-
-    def clear(self):
-        self.cache.clear()
-
-
-element_cache = ElementCache()
-
-
-class UserActionListener(AbstractEventListener):
+class UserActionListener:
     def __init__(self):
         self.actions = []
         self.last_url = None
         self.main_window = None
         self.keyboard_listener = None
         self.window_size = None
+
+    def start_listeners(self):
+        self.start_keyboard_listener()
+
+    def stop_listeners(self):
+        self.stop_keyboard_listener()
 
     def start_keyboard_listener(self):
         self.keyboard_listener = keyboard.Listener(on_press=self.on_key_press)
@@ -88,20 +54,13 @@ class UserActionListener(AbstractEventListener):
             "time": time.time()
         })
 
-    def after_navigate_to(self, url, driver):
-        self.actions.append({
-            "type": "navigated",
-            "url": driver.current_url,
-            "time": time.time(),
-            "title": driver.title
-        })
-        self.last_url = driver.current_url
-        self.inject_event_listeners(driver)
-        self.window_size = driver.get_window_size()
-
-    def inject_event_listeners(self, driver):
+    async def inject_event_listeners(self, tab):
         js_code = """
-        window.seleniumClickListener = function(e) {
+        if (typeof window.nodriverActions === 'undefined') {
+            window.nodriverActions = [];
+        }
+    
+        window.nodriverClickListener = function(e) {
             var element = e.target;
             var xpath = getXPath(element);
             var rect = element.getBoundingClientRect();
@@ -118,10 +77,10 @@ class UserActionListener(AbstractEventListener):
                 y: (rect.top + window.scrollY) / window.innerHeight,
                 time: new Date().getTime()
             };
-            window.seleniumActions.push(data);
+            window.nodriverActions.push(data);
         };
-
-        window.seleniumInputListener = function(e) {
+    
+        window.nodriverInputListener = function(e) {
             var element = e.target;
             var xpath = getXPath(element);
             var rect = element.getBoundingClientRect();
@@ -136,15 +95,15 @@ class UserActionListener(AbstractEventListener):
                 y: (rect.top + window.scrollY) / window.innerHeight,
                 time: new Date().getTime()
             };
-            window.seleniumActions.push(data);
+            window.nodriverActions.push(data);
         };
-
+    
         function getXPath(element) {
             if (element.id !== '')
                 return 'id("' + element.id + '")';
             if (element === document.body)
                 return element.tagName;
-
+    
             var ix = 0;
             var siblings = element.parentNode.childNodes;
             for (var i = 0; i < siblings.length; i++) {
@@ -155,161 +114,39 @@ class UserActionListener(AbstractEventListener):
                     ix++;
             }
         }
-
-        if (!window.seleniumActionsInjected) {
-            window.seleniumActions = [];
-            document.addEventListener('click', window.seleniumClickListener, true);
-            document.addEventListener('input', window.seleniumInputListener, true);
-            window.seleniumActionsInjected = true;
+    
+        if (!window.nodriverActionsInjected) {
+            document.addEventListener('click', window.nodriverClickListener, true);
+            document.addEventListener('input', window.nodriverInputListener, true);
+            window.nodriverActionsInjected = true;
         }
         """
-        driver.execute_script(js_code)
+        await tab.evaluate(js_code)
 
-    def get_actions_from_js(self, driver):
-        js_actions = driver.execute_script("return window.seleniumActions;")
+    async def get_actions_from_js(self, tab):
+        js_actions = await tab.evaluate("window.nodriverActions")
         if js_actions:
             self.actions.extend(js_actions)
-            driver.execute_script("window.seleniumActions = [];")
+            await tab.evaluate("window.nodriverActions = []")
 
 
-def smart_find_element(driver, locator_dict):
-    for method, value in locator_dict.items():
-        try:
-            if method == 'id':
-                return driver.find_element(By.ID, value)
-            elif method == 'name':
-                return driver.find_element(By.NAME, value)
-            elif method == 'class':
-                return driver.find_element(By.CLASS_NAME, value)
-            elif method == 'xpath':
-                return driver.find_element(By.XPATH, value)
-            elif method == 'css':
-                return driver.find_element(By.CSS_SELECTOR, value)
-        except NoSuchElementException:
-            continue
-    return None
+import re
 
 
-def wait_for_element(driver, locator: Union[Tuple[str, str], Tuple[By, str]], timeout: int = DEFAULT_TIMEOUT):
-    try:
-        if isinstance(locator[0], str):
-            selenium_locator = locator
-        else:
-            selenium_locator = (locator[0].__str__(), locator[1])
-
-        return WebDriverWait(driver, timeout).until(
-            EC.presence_of_element_located(selenium_locator)
-        )
-    except TimeoutException:
-        logger.warning(f"Element {locator} not found within {timeout} seconds")
-        return None
+async def get_page_title(tab):
+    content = await tab.get_content()
+    match = re.search(r'<title>(.*?)</title>', content, re.IGNORECASE)
+    if match:
+        return match.group(1)
+    return "Untitled"
 
 
-def retry_action(func, max_attempts: int = 3, delay: int = 1):
-    def wrapper(*args, **kwargs):
-        for attempt in range(max_attempts):
-            try:
-                return func(*args, **kwargs)
-            except (StaleElementReferenceException, TimeoutException) as e:
-                if attempt == max_attempts - 1:
-                    logger.error(f"Action failed after {max_attempts} attempts: {str(e)}")
-                    raise
-                logger.warning(f"Action failed, retrying in {delay} seconds...")
-                time.sleep(delay)
-
-    return wrapper
-
-
-@contextmanager
-def create_driver(setup):
-    driver = None
-    try:
-        driver = setup.get_driver()
-        if driver is None:
-            setup.initialize_driver()
-            driver = setup.get_driver()
-        if driver is None:
-            raise WebDriverException("Failed to initialize the driver")
-        yield driver
-    finally:
-        if driver:
-            try:
-                driver.quit()
-            except Exception as e:
-                logger.error(f"Error during driver cleanup: {str(e)}")
-
-
-def safe_quit(driver):
-    try:
-        if driver:
-            driver.quit()
-    except Exception as e:
-        logger.error(f"Error during driver cleanup: {str(e)}")
-
-
-def take_error_screenshot(driver, error_name):
-    timestamp = time.strftime("%Y%m%d-%H%M%S")
-    screenshot_name = f"error_{error_name}_{timestamp}.png"
-    driver.save_screenshot(screenshot_name)
-    logger.info(f"Error screenshot saved: {screenshot_name}")
-
-
-def recover_from_error(driver):
-    try:
-        driver.refresh()
-        WebDriverWait(driver, DEFAULT_TIMEOUT).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-        logger.info("Page successfully refreshed after error")
-    except Exception as e:
-        logger.error(f"Failed to recover from error: {str(e)}")
-
-
-def is_window_handle_valid(driver, handle):
-    try:
-        driver.switch_to.window(handle)
-        return True
-    except NoSuchWindowException:
-        return False
-
-
-def safe_switch_window(driver, window_handle):
-    max_attempts = 3
-    for attempt in range(max_attempts):
-        try:
-            if is_window_handle_valid(driver, window_handle):
-                driver.switch_to.window(window_handle)
-                return True
-            else:
-                logger.warning(f"Window handle {window_handle} is not valid.")
-                return False
-        except WebDriverException as e:
-            if attempt == max_attempts - 1:
-                logger.error(f"Failed to switch to window {window_handle} after {max_attempts} attempts.")
-                return False
-            logger.warning(f"Failed to switch window, retrying... Error: {e}")
-            time.sleep(1)
-    return False
-
-
-@retry_action
-def monitor_url_and_actions(ef_driver, listener, stop_event):
-    listener.main_window = ef_driver.current_window_handle
+async def monitor_url_and_actions(browser, listener, stop_event):
+    main_tab = browser.main_tab
+    listener.main_window = main_tab
     while not stop_event.is_set():
         try:
-            current_handles = ef_driver.window_handles
-            if len(current_handles) > 1:
-                for handle in current_handles:
-                    if handle != listener.main_window:
-                        safe_switch_window(ef_driver, handle)
-                        listener.actions.append({
-                            "type": "window_change",
-                            "url": ef_driver.current_url,
-                            "time": time.time(),
-                            "window_handle": handle
-                        })
-                        listener.inject_event_listeners(ef_driver)
-                        break  # Обработаем только первое новое окно
-
-            current_url = ef_driver.current_url
+            current_url = main_tab.url
             if current_url != listener.last_url:
                 listener.actions.append({
                     "type": "url_change",
@@ -318,51 +155,35 @@ def monitor_url_and_actions(ef_driver, listener, stop_event):
                     "previous_url": listener.last_url
                 })
                 listener.last_url = current_url
-                listener.inject_event_listeners(ef_driver)
+                await listener.inject_event_listeners(main_tab)
 
-            listener.get_actions_from_js(ef_driver)
+            await listener.get_actions_from_js(main_tab)
 
-            # Проверяем, существует ли текущее окно
-            if ef_driver.current_window_handle not in current_handles:
-                logger.info("Current window was closed. Switching to main window.")
-                safe_switch_window(ef_driver, listener.main_window)
-
-            page_state = ef_driver.execute_script("return document.readyState;")
+            page_state = await main_tab.evaluate("document.readyState")
             if page_state != "complete":
                 logger.info(f"Page is still loading. Current state: {page_state}")
 
+            window_id, bounds = await main_tab.get_window()
+            title = await get_page_title(main_tab)
             listener.actions.append({
                 "type": "page_info",
-                "url": ef_driver.current_url,
-                "title": ef_driver.title,
+                "url": current_url,
+                "title": title,
                 "time": time.time(),
-                "window_size": ef_driver.get_window_size()
+                "window_id": window_id,
+                "window_bounds": {
+                    "left": bounds.left,
+                    "top": bounds.top,
+                    "width": bounds.width,
+                    "height": bounds.height
+                }
             })
 
-        except NoSuchWindowException:
-            logger.warning("Browser window has been closed. Switching to main window.")
-            if listener.main_window in ef_driver.window_handles:
-                safe_switch_window(ef_driver, listener.main_window)
-            else:
-                logger.error("Main window has been closed. Stopping monitoring.")
-                stop_event.set()
-                break
-        except WebDriverException as e:
-            logger.error(f"WebDriver exception occurred: {str(e)}")
-            if "invalid session id" in str(e).lower():
-                logger.critical("Browser session has ended. Stopping monitoring.")
-                stop_event.set()
-                break
-            take_error_screenshot(ef_driver, "webdriver_exception")
-            recover_from_error(ef_driver)
         except Exception as e:
-            logger.error(f"Unexpected error in monitoring thread: {str(e)}")
+            logger.error(f"Error in monitoring thread: {str(e)}")
             logger.error(traceback.format_exc())
-            take_error_screenshot(ef_driver, "unexpected_error")
-            stop_event.set()
-            break
 
-        time.sleep(0.5)  # Небольшая задержка для снижения нагрузки на CPU
+        await asyncio.sleep(0.5)
 
     logger.info("Monitoring thread has stopped.")
 
@@ -372,7 +193,7 @@ async def record_actions(setup):
     stop_event = asyncio.Event()
 
     try:
-        main_tab = setup.main_tab
+        main_tab = setup.browser.main_tab
 
         await main_tab.get("https://miles.plumenetwork.xyz/")
         listener.last_url = main_tab.url
@@ -380,17 +201,21 @@ async def record_actions(setup):
         print("Recording started. Perform your actions.")
         print("Press Ctrl+C to stop recording.")
 
-        listener.start_keyboard_listener()
+        listener.start_listeners()
         monitor_task = asyncio.create_task(monitor_url_and_actions(setup.browser, listener, stop_event))
 
         try:
             while not stop_event.is_set():
+                # Получаем события кликов
+                click_events = await get_click_events(main_tab)
+                if click_events:
+                    listener.actions.extend(click_events)
                 await asyncio.sleep(1)
         except KeyboardInterrupt:
             print("Recording stopped by user.")
         finally:
             stop_event.set()
-            listener.stop_keyboard_listener()
+            listener.stop_listeners()
             await monitor_task
 
     except Exception as e:
@@ -416,7 +241,73 @@ def export_actions_for_playback(actions):
                 'selector': f"xpath:{action['xpath']}",
                 'value': action.get('value', '')
             })
+        elif action['type'] == 'key_press':
+            playback_actions.append({
+                'type': 'key_press',
+                'key': action['key']
+            })
+        elif action['type'] == 'url_change':
+            playback_actions.append({
+                'type': 'navigate',
+                'url': action['url']
+            })
     return playback_actions
+
+
+async def inject_click_listener(tab):
+    js_code = """
+    if (typeof window.clickEvents === 'undefined') {
+        window.clickEvents = [];
+    }
+
+    function getXPath(element) {
+        if (element.id !== '')
+            return 'id("' + element.id + '")';
+        if (element === document.body)
+            return element.tagName;
+
+        var ix = 0;
+        var siblings = element.parentNode.childNodes;
+        for (var i = 0; i < siblings.length; i++) {
+            var sibling = siblings[i];
+            if (sibling === element)
+                return getXPath(element.parentNode) + '/' + element.tagName + '[' + (ix + 1) + ']';
+            if (sibling.nodeType === 1 && sibling.tagName === element.tagName)
+                ix++;
+        }
+    }
+
+    document.addEventListener('click', function(e) {
+        var element = e.target;
+        var eventData = {
+            type: 'click',
+            tagName: element.tagName,
+            id: element.id,
+            className: element.className,
+            xpath: getXPath(element),
+            time: new Date().getTime()
+        };
+        window.clickEvents.push(eventData);
+    }, true);
+    """
+    await tab.evaluate(js_code)
+
+
+async def get_click_events(tab):
+    events = await tab.evaluate("window.clickEvents")
+    if events:
+        await tab.evaluate("window.clickEvents = []")
+    return events
+
+
+async def monitor_clicks(tab):
+    await inject_click_listener(tab)
+    while True:
+        events = await get_click_events(tab)
+        if events:
+            for event in events:
+                print(f"Click event: {event}")
+        await asyncio.sleep(0.5)
 
 
 async def main():
@@ -429,7 +320,20 @@ async def main():
     setup = UndetectedSetup("my_profile", proxy=proxy)
     try:
         await setup.initialize_driver()
+
+        # Создаем задачу для мониторинга кликов
+        click_monitor_task = asyncio.create_task(monitor_clicks(setup.browser.main_tab))
+
+        # Запускаем запись действий
         await record_actions(setup)
+
+        # Останавливаем мониторинг кликов
+        click_monitor_task.cancel()
+        try:
+            await click_monitor_task
+        except asyncio.CancelledError:
+            pass
+
     except Exception as e:
         logger.error(f"An error occurred in main: {e}")
         logger.error(traceback.format_exc())
@@ -445,4 +349,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
