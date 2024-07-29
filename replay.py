@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import time
 import traceback
 
 from undetected import UndetectedSetup
@@ -23,22 +24,42 @@ def load_recorded_clicks():
 
 async def perform_click(tab, click_event):
     try:
-        text = click_event.get('textContent') or click_event.get('innerText')
-        tag_name = click_event['tagName'].lower()
-        class_name = click_event.get('className', '')
+        text = click_event.get('text_all') or click_event.get('textContent') or click_event.get('innerText')
+        shadow_path = click_event['shadowPath']
+        custom_selector = click_event['customSelector']
 
-        # Попробуем найти элемент разными способами
-        element = await tab.find(text, best_match=True)
-        if not element:
-            element = await tab.select(f"{tag_name}[class*='{class_name}']")
-        if not element:
-            element = await tab.query_selector(f"xpath={click_event['xpath']}")
+        element = None
+        if text:
+            element = await tab.find(text, best_match=True)
+        if not element and shadow_path:
+            js_code = f"""
+            function getElementByShadowPath(path) {{
+                const parts = path.split(' > ');
+                let element = window;
+                for (const part of parts) {{
+                    if (part === 'document') {{
+                        element = element.document;
+                    }} else if (part === 'shadowRoot') {{
+                        element = element.shadowRoot;
+                    }} else {{
+                        const [tag, ...classes] = part.split('.');
+                        element = element.querySelector(tag + (classes.length ? '.' + classes.join('.') : ''));
+                        if (!element) return null;
+                    }}
+                }}
+                return element;
+            }}
+            return getElementByShadowPath("{shadow_path}");
+            """
+            element = await tab.evaluate(js_code)
+        if not element and custom_selector:
+            element = await tab.query_selector(custom_selector)
 
         if element:
-            await element.mouse_click()
-            logger.info(f"Clicked element: {click_event['tagName']} - {text}")
+            await element.click()
+            logger.info(f"Clicked element: {click_event['tagName']} - {text or shadow_path or custom_selector}")
         else:
-            logger.warning(f"Element not found: {text}")
+            logger.warning(f"Element not found: {text or shadow_path or custom_selector}")
     except Exception as e:
         logger.error(f"Error performing click: {e}")
 
@@ -85,3 +106,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+    time.sleep(5)

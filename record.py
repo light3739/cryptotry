@@ -9,9 +9,11 @@ from undetected import UndetectedSetup
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+
 class ClickRecorder:
     def __init__(self):
         self.clicks = []
+
 
 async def inject_click_listener(tab):
     js_code = """
@@ -19,33 +21,72 @@ async def inject_click_listener(tab):
         window.clickEvents = [];
     }
 
-    function getXPath(element) {
-        if (element.id !== '')
-            return 'id("' + element.id + '")';
-        if (element === document.body)
-            return element.tagName;
-
-        var ix = 0;
-        var siblings = element.parentNode.childNodes;
-        for (var i = 0; i < siblings.length; i++) {
-            var sibling = siblings[i];
-            if (sibling === element)
-                return getXPath(element.parentNode) + '/' + element.tagName + '[' + (ix + 1) + ']';
-            if (sibling.nodeType === 1 && sibling.tagName === element.tagName)
-                ix++;
+    function getComposedPath(element) {
+        let path = [];
+        while (element) {
+            path.push(element);
+            if (element.tagName === 'HTML') {
+                path.push(document);
+                path.push(window);
+                return path;
+            }
+            element = element.parentNode || element.host;
         }
+        return path;
+    }
+
+    function getShadowRootPath(element) {
+        const path = getComposedPath(element);
+        return path.map(el => {
+            if (el === window) return 'window';
+            if (el === document) return 'document';
+            if (el instanceof ShadowRoot) return 'shadowRoot';
+            return el.tagName.toLowerCase() + (el.id ? `#${el.id}` : '') + (el.className ? `.${el.className.replace(/\\s+/g, '.')}` : '');
+        }).join(' > ');
+    }
+
+    function getCustomSelector(element) {
+        if (element.id) return '#' + element.id;
+        if (element.className) {
+            const classes = element.className.split(/\\s+/).filter(Boolean);
+            if (classes.length) return '.' + classes.join('.');
+        }
+        return element.tagName.toLowerCase();
+    }
+
+    function getAllText(element) {
+        return element.innerText || element.textContent || '';
+    }
+
+    function getButtonDescription(element) {
+        if (element.tagName.toLowerCase() === 'button') {
+            const text = getAllText(element).trim();
+            if (!text) {
+                // Если у кнопки нет текста, попробуем найти иконку или другое содержимое
+                const iconElement = element.querySelector('i, svg, img');
+                if (iconElement) {
+                    return `Button with ${iconElement.tagName.toLowerCase()}`;
+                }
+                return 'Button without text';
+            }
+            return text;
+        }
+        return null;
     }
 
     document.addEventListener('click', function(e) {
-        var element = e.target;
+        var element = e.composedPath()[0];
         var eventData = {
             type: 'click',
             tagName: element.tagName,
             id: element.id,
             className: element.className,
-            xpath: getXPath(element),
-            textContent: element.textContent,
-            innerText: element.innerText,
+            shadowPath: getShadowRootPath(element),
+            customSelector: getCustomSelector(element),
+            textContent: element.textContent.trim(),
+            innerText: element.innerText.trim(),
+            text_all: getAllText(element).trim(),
+            buttonDescription: getButtonDescription(element),
             time: new Date().getTime()
         };
         window.clickEvents.push(eventData);
@@ -54,11 +95,13 @@ async def inject_click_listener(tab):
     """
     await tab.evaluate(js_code)
 
+
 async def get_click_events(tab):
     events = await tab.evaluate("window.clickEvents")
     if events:
         await tab.evaluate("window.clickEvents = []")
     return events
+
 
 async def record_clicks(setup, recorder, stop_event):
     main_tab = setup.browser.main_tab
@@ -75,12 +118,14 @@ async def record_clicks(setup, recorder, stop_event):
             recorder.clicks.extend(click_events)
         await asyncio.sleep(0.1)
 
+
 async def input_listener(stop_event):
     while True:
         user_input = await asyncio.get_event_loop().run_in_executor(None, input)
         if user_input.lower() == 'q':
             stop_event.set()
             break
+
 
 async def main():
     proxy = {
@@ -111,6 +156,7 @@ async def main():
         with open("recorded_clicks.json", "w") as f:
             json.dump(recorder.clicks, f, indent=2)
         print("Clicks recorded and saved to recorded_clicks.json")
+
 
 if __name__ == "__main__":
     asyncio.run(main())
