@@ -14,7 +14,8 @@ class ClickRecorder:
     def __init__(self):
         self.clicks = []
 
-
+ # TODO :
+ # Во первых сделать этот репо приватным. Остальные мысли написал в тг
 async def inject_click_listener(tab):
     js_code = """
     if (typeof window.clickEvents === 'undefined') {
