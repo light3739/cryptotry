@@ -24,44 +24,83 @@ def load_recorded_clicks():
 
 async def perform_click(tab, click_event):
     try:
-        text = click_event.get('text_all') or click_event.get('textContent') or click_event.get('innerText')
+        text = click_event.get('buttonDescription') or click_event.get('text_all') or click_event.get(
+            'textContent') or click_event.get('innerText')
         shadow_path = click_event['shadowPath']
         custom_selector = click_event['customSelector']
 
         element = None
         if text:
-            element = await tab.find(text, best_match=True)
+            element = await tab.find(text, best_match=False)
         if not element and shadow_path:
             js_code = f"""
-            function getElementByShadowPath(path) {{
-                const parts = path.split(' > ');
-                let element = window;
-                for (const part of parts) {{
-                    if (part === 'document') {{
-                        element = element.document;
-                    }} else if (part === 'shadowRoot') {{
-                        element = element.shadowRoot;
-                    }} else {{
-                        const [tag, ...classes] = part.split('.');
-                        element = element.querySelector(tag + (classes.length ? '.' + classes.join('.') : ''));
-                        if (!element) return null;
+            (function() {{
+                function getElementByShadowPath(path) {{
+                    const parts = path.split(' > ');
+                    let element = window;
+                    for (const part of parts) {{
+                        if (part === 'document') {{
+                            element = element.document;
+                        }} else if (part === 'shadowRoot') {{
+                            if (element.shadowRoot) {{
+                                element = element.shadowRoot;
+                            }} else {{
+                                console.error('No shadow root found for element:', element);
+                                return null;
+                            }}
+                        }} else {{
+                            const [tag, ...classes] = part.split('.');
+                            if (typeof element.querySelector === 'function') {{
+                                element = element.querySelector(tag + (classes.length ? '.' + classes.join('.') : ''));
+                            }} else {{
+                                console.error('querySelector is not a function for element:', element);
+                                return null;
+                            }}
+                            if (!element) return null;
+                        }}
                     }}
+                    return element;
                 }}
-                return element;
-            }}
-            return getElementByShadowPath("{shadow_path}");
+                return getElementByShadowPath("{shadow_path}");
+            }})();
             """
-            element = await tab.evaluate(js_code)
+            try:
+                element = await tab.evaluate(js_code)
+            except Exception as eval_error:
+                logger.error(f"Error evaluating JavaScript: {eval_error}")
+                logger.error(traceback.format_exc())
         if not element and custom_selector:
             element = await tab.query_selector(custom_selector)
 
         if element:
-            await element.click()
-            logger.info(f"Clicked element: {click_event['tagName']} - {text or shadow_path or custom_selector}")
+            try:
+                await element.click()
+                logger.info(f"Clicked element: {click_event['tagName']} - {text or shadow_path or custom_selector}")
+            except Exception as click_error:
+                logger.error(f"Error clicking element: {click_error}")
+                logger.error(traceback.format_exc())
+                # Try alternative click method
+                try:
+                    await tab.evaluate("""
+                        (element) => {
+                            const clickEvent = new MouseEvent('click', {
+                                view: window,
+                                bubbles: true,
+                                cancelable: true
+                            });
+                            element.dispatchEvent(clickEvent);
+                        }
+                    """, element)
+                    logger.info(
+                        f"Clicked element using alternative method: {click_event['tagName']} - {text or shadow_path or custom_selector}")
+                except Exception as alt_click_error:
+                    logger.error(f"Error clicking element with alternative method: {alt_click_error}")
+                    logger.error(traceback.format_exc())
         else:
             logger.warning(f"Element not found: {text or shadow_path or custom_selector}")
     except Exception as e:
         logger.error(f"Error performing click: {e}")
+        logger.error(traceback.format_exc())
 
 
 async def replay_clicks(setup):

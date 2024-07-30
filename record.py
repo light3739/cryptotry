@@ -55,23 +55,48 @@ async def inject_click_listener(tab):
     }
 
     function getAllText(element) {
+        if (element.tagName.toLowerCase() === 'slot') {
+            return Array.from(element.assignedNodes())
+                .map(node => node.textContent || '')
+                .join(' ')
+                .trim();
+        }
         return element.innerText || element.textContent || '';
     }
 
-    function getButtonDescription(element) {
-        if (element.tagName.toLowerCase() === 'button') {
-            const text = getAllText(element).trim();
-            if (!text) {
-                // Если у кнопки нет текста, попробуем найти иконку или другое содержимое
-                const iconElement = element.querySelector('i, svg, img');
-                if (iconElement) {
-                    return `Button with ${iconElement.tagName.toLowerCase()}`;
-                }
-                return 'Button without text';
+    function getElementDescription(element) {
+        // Ищем текст внутри элемента и его дочерних элементов, включая Shadow DOM
+        function getElementText(el) {
+            const text = getAllText(el).trim();
+            if (text) return text;
+
+            // Если текста нет, ищем в дочерних элементах
+            for (const child of el.children) {
+                const childText = getElementText(child);
+                if (childText) return childText;
             }
-            return text;
+
+            // Если текста нет в обычном DOM, ищем в Shadow DOM
+            if (el.shadowRoot) {
+                const shadowText = getElementText(el.shadowRoot);
+                if (shadowText) return shadowText;
+            }
+
+            return '';
         }
-        return null;
+
+        const elementText = getElementText(element);
+
+        if (elementText) {
+            return elementText;
+        } else {
+            // Если текста нет, ищем иконку или другое содержимое
+            const iconElement = element.querySelector('i, svg, img');
+            if (iconElement) {
+                return `Element with ${iconElement.tagName.toLowerCase()}`;
+            }
+            return 'Element without text';
+        }
     }
 
     document.addEventListener('click', function(e) {
@@ -86,7 +111,7 @@ async def inject_click_listener(tab):
             textContent: element.textContent.trim(),
             innerText: element.innerText.trim(),
             text_all: getAllText(element).trim(),
-            buttonDescription: getButtonDescription(element),
+            elementDescription: getElementDescription(element),
             time: new Date().getTime()
         };
         window.clickEvents.push(eventData);
