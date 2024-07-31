@@ -5,7 +5,6 @@ import traceback
 
 from undetected import UndetectedSetup
 
-# Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -13,9 +12,9 @@ logger = logging.getLogger(__name__)
 class ClickRecorder:
     def __init__(self):
         self.clicks = []
+        self.tabs = []
 
- # TODO :
- # Во первых сделать этот репо приватным. Остальные мысли написал в тг
+
 async def inject_click_listener(tab):
     js_code = """
     if (typeof window.clickEvents === 'undefined') {
@@ -130,19 +129,52 @@ async def get_click_events(tab):
 
 
 async def record_clicks(setup, recorder, stop_event):
-    main_tab = setup.browser.main_tab
+    browser = setup.browser
+    main_tab = browser.main_tab
 
-    await main_tab.get("https://miles.plumenetwork.xyz/")
-    await inject_click_listener(main_tab)
+    try:
+        await main_tab.get("https://miles.plumenetwork.xyz/")
+        await inject_click_listener(main_tab)
+        recorder.tabs.append(main_tab)
 
-    print("Recording started. Perform your actions.")
-    print("Press 'q' and Enter to stop recording.")
+        print("Recording started. Perform your actions.")
+        print("Press 'q' and Enter to stop recording.")
 
-    while not stop_event.is_set():
-        click_events = await get_click_events(main_tab)
-        if click_events:
-            recorder.clicks.extend(click_events)
-        await asyncio.sleep(0.1)
+        while not stop_event.is_set():
+            try:
+                current_tabs = browser.tabs
+                new_tabs = [tab for tab in current_tabs if tab not in recorder.tabs]
+                for tab in new_tabs:
+                    try:
+                        await inject_click_listener(tab)
+                        recorder.tabs.append(tab)
+                    except Exception as inject_error:
+                        logger.error(f"Error injecting click listener: {inject_error}")
+
+                for tab in recorder.tabs:
+                    try:
+                        click_events = await get_click_events(tab)
+                        if click_events:
+                            try:
+                                current_url = await tab.evaluate("window.location.href")
+                                for event in click_events:
+                                    event['url'] = current_url
+                                recorder.clicks.extend(click_events)
+                            except Exception as url_error:
+                                logger.error(f"Error getting URL: {url_error}")
+                    except Exception as tab_error:
+                        logger.error(f"Error processing tab: {tab_error}")
+
+                recorder.tabs = [tab for tab in recorder.tabs if tab in current_tabs]
+
+            except Exception as loop_error:
+                logger.error(f"Error in main loop: {loop_error}")
+
+            await asyncio.sleep(0.1)
+
+    except Exception as e:
+        logger.error(f"Error in record_clicks: {e}")
+        logger.error(traceback.format_exc())
 
 
 async def input_listener(stop_event):
