@@ -9,16 +9,20 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 
-class ClickRecorder:
+class EventRecorder:
     def __init__(self):
-        self.clicks = []
+        self.events = []
         self.tabs = []
+        self.last_input = {}  # Хранит последнее событие ввода для каждого элемента
 
 
-async def inject_click_listener(tab):
+async def inject_event_listener(tab):
     js_code = """
-    if (typeof window.clickEvents === 'undefined') {
-        window.clickEvents = [];
+    if (typeof window.recordedEvents === 'undefined') {
+        window.recordedEvents = [];
+    }
+    if (typeof window.lastInputEvent === 'undefined') {
+        window.lastInputEvent = {};
     }
 
     function getComposedPath(element) {
@@ -65,18 +69,15 @@ async def inject_click_listener(tab):
     }
 
     function getElementDescription(element) {
-        // Ищем текст внутри элемента и его дочерних элементов, включая Shadow DOM
         function getElementText(el) {
             const text = getAllText(el).trim();
             if (text) return text;
 
-            // Если текста нет, ищем в дочерних элементах
             for (const child of el.children) {
                 const childText = getElementText(child);
                 if (childText) return childText;
             }
 
-            // Если текста нет в обычном DOM, ищем в Shadow DOM
             if (el.shadowRoot) {
                 const shadowText = getElementText(el.shadowRoot);
                 if (shadowText) return shadowText;
@@ -90,7 +91,6 @@ async def inject_click_listener(tab):
         if (elementText) {
             return elementText;
         } else {
-            // Если текста нет, ищем иконку или другое содержимое
             const iconElement = element.querySelector('i, svg, img');
             if (iconElement) {
                 return `Element with ${iconElement.tagName.toLowerCase()}`;
@@ -114,27 +114,53 @@ async def inject_click_listener(tab):
             elementDescription: getElementDescription(element),
             time: new Date().getTime()
         };
-        window.clickEvents.push(eventData);
+        
+        // Добавляем последнее событие ввода перед кликом, если оно есть
+        if (window.lastInputEvent[eventData.customSelector]) {
+            window.recordedEvents.push(window.lastInputEvent[eventData.customSelector]);
+            delete window.lastInputEvent[eventData.customSelector];
+        }
+        
+        window.recordedEvents.push(eventData);
         console.log('Click event:', JSON.stringify(eventData));
+    }, true);
+
+    document.addEventListener('input', function(e) {
+        var element = e.target;
+        var eventData = {
+            type: 'input',
+            tagName: element.tagName,
+            id: element.id,
+            className: element.className,
+            shadowPath: getShadowRootPath(element),
+            customSelector: getCustomSelector(element),
+            value: element.value,
+            time: new Date().getTime()
+        };
+        window.lastInputEvent[eventData.customSelector] = eventData;
+        console.log('Input event:', JSON.stringify(eventData));
     }, true);
     """
     await tab.evaluate(js_code)
 
 
-async def get_click_events(tab):
-    events = await tab.evaluate("window.clickEvents")
+async def get_recorded_events(tab):
+    events = await tab.evaluate("window.recordedEvents")
+    last_input = await tab.evaluate("window.lastInputEvent")
     if events:
-        await tab.evaluate("window.clickEvents = []")
-    return events
+        await tab.evaluate("window.recordedEvents = []")
+    if last_input:
+        await tab.evaluate("window.lastInputEvent = {}")
+    return events, last_input
 
 
-async def record_clicks(setup, recorder, stop_event):
+async def record_events(setup, recorder, stop_event):
     browser = setup.browser
     main_tab = browser.main_tab
 
     try:
         await main_tab.get("https://miles.plumenetwork.xyz/")
-        await inject_click_listener(main_tab)
+        await inject_event_listener(main_tab)
         recorder.tabs.append(main_tab)
 
         print("Recording started. Perform your actions.")
@@ -146,23 +172,33 @@ async def record_clicks(setup, recorder, stop_event):
                 new_tabs = [tab for tab in current_tabs if tab not in recorder.tabs]
                 for tab in new_tabs:
                     try:
-                        await inject_click_listener(tab)
+                        await inject_event_listener(tab)
                         recorder.tabs.append(tab)
                     except Exception as inject_error:
-                        logger.error(f"Error injecting click listener: {inject_error}")
+                        logger.error(f"Error injecting event listener: {inject_error}")
 
                 for tab in recorder.tabs:
                     try:
-                        click_events = await get_click_events(tab)
-                        if click_events:
+                        events, last_input = await get_recorded_events(tab)
+                        if events or last_input:
                             try:
                                 current_url = await tab.evaluate("window.location.href")
-                                for event in click_events:
-                                    event['url'] = current_url
-                                recorder.clicks.extend(click_events)
+                                if events:
+                                    for event in events:
+                                        event['url'] = current_url
+                                    recorder.events.extend(events)
+
+                                if last_input:
+                                    for selector, event in last_input.items():
+                                        event['url'] = current_url
+                                        recorder.last_input[selector] = event
                             except Exception as url_error:
                                 logger.error(f"Error getting URL: {url_error}")
                     except Exception as tab_error:
+                        if "server rejected WebSocket connection: HTTP 500" in str(tab_error):
+                            logger.warning(f"WebSocket connection rejected. Retrying in 5 seconds...")
+                            await asyncio.sleep(5)
+                            continue
                         logger.error(f"Error processing tab: {tab_error}")
 
                 recorder.tabs = [tab for tab in recorder.tabs if tab in current_tabs]
@@ -173,7 +209,7 @@ async def record_clicks(setup, recorder, stop_event):
             await asyncio.sleep(0.1)
 
     except Exception as e:
-        logger.error(f"Error in record_clicks: {e}")
+        logger.error(f"Error in record_events: {e}")
         logger.error(traceback.format_exc())
 
 
@@ -193,13 +229,13 @@ async def main():
         'pass': 'c560667e15'
     }
     setup = UndetectedSetup("my_profile", proxy=proxy)
-    recorder = ClickRecorder()
+    recorder = EventRecorder()
     stop_event = asyncio.Event()
 
     try:
         await setup.initialize_driver()
 
-        record_task = asyncio.create_task(record_clicks(setup, recorder, stop_event))
+        record_task = asyncio.create_task(record_events(setup, recorder, stop_event))
         input_task = asyncio.create_task(input_listener(stop_event))
 
         await asyncio.gather(record_task, input_task)
@@ -211,9 +247,13 @@ async def main():
         if setup.browser:
             await setup.close_browser()
 
-        with open("recorded_clicks.json", "w") as f:
-            json.dump(recorder.clicks, f, indent=2)
-        print("Clicks recorded and saved to recorded_clicks.json")
+        # Добавляем оставшиеся события ввода в конец списка событий
+        for input_event in recorder.last_input.values():
+            recorder.events.append(input_event)
+
+        with open("recorded_events.json", "w") as f:
+            json.dump(recorder.events, f, indent=2)
+        print("Events recorded and saved to recorded_events.json")
 
 
 if __name__ == "__main__":
