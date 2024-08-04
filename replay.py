@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import time
 import traceback
 
 from undetected import UndetectedSetup
@@ -12,13 +13,25 @@ logger = logging.getLogger(__name__)
 def load_recorded_events():
     try:
         with open("recorded_events.json", "r") as f:
-            return json.load(f)
+            events = json.load(f)
+        return [normalize_event(event) for event in events]
     except FileNotFoundError:
         logger.error("recorded_events.json not found")
         return []
     except json.JSONDecodeError:
         logger.error("Error decoding recorded_events.json")
         return []
+
+
+def normalize_event(event):
+    required_fields = ['type', 'time', 'url']
+    for field in required_fields:
+        if field not in event:
+            if field == 'time':
+                event[field] = int(time.time() * 1000)
+            else:
+                event[field] = ''
+    return event
 
 
 async def perform_click(tab, click_event, max_retries=3, retry_delay=1):
@@ -85,71 +98,84 @@ async def perform_click(tab, click_event, max_retries=3, retry_delay=1):
         logger.error(traceback.format_exc())
 
 
-async def perform_input(tab, input_event, max_retries=3, retry_delay=1):
+async def perform_input(tab, input_event, browser, max_retries=3, retry_delay=1):
     try:
         custom_selector = input_event['customSelector']
         value = input_event['value']
-        tag_name = input_event['tagName']
-        class_name = input_event['className']
+        shadow_path = input_event['shadowPath']
+        target_url = input_event['url']
+
+        extension_tab = None
+        for existing_tab in browser.tabs:
+            tab_url = await existing_tab.evaluate("window.location.href")
+            if tab_url.startswith(target_url):
+                extension_tab = existing_tab
+                break
+
+        if extension_tab:
+            await extension_tab.activate()
+            logger.info(f"Switched to existing extension tab: {target_url}")
+            await asyncio.sleep(2)
+        else:
+            logger.warning(f"Extension tab not found: {target_url}")
+            return
 
         for attempt in range(max_retries):
             try:
-                # Попробуем найти элемент несколькими способами
-                element = None
-
-                # Используем JavaScript для поиска элемента, что позволит работать в контексте расширения
                 js_code = f"""
                 (function() {{
-                    let element = null;
-                    // 1. Попробуем найти любой input на странице
-                    if (!element) {{
-                        element = document.querySelector('input');
-                        if (element) console.log("Found element using general input selector");
+                    function getElementByPath(path) {{
+                        const parts = path.split(' > ').reverse();
+                        let element = document;
+                        for (const part of parts) {{
+                            if (part === 'shadowRoot') {{
+                                element = element.shadowRoot;
+                            }} else if (part.startsWith('html')) {{
+                                element = document.documentElement;
+                            }} else if (part.startsWith('body')) {{
+                                element = document.body;
+                            }} else {{
+                                const [tag, ...classes] = part.split('.');
+                                element = element.querySelector(tag + (classes.length ? '.' + classes.join('.') : ''));
+                            }}
+                            if (!element) return null;
+                        }}
+                        return element;
                     }}
-                    // 2. Попробуем найти по атрибуту type="text" или type="password"
-                    if (!element) {{
-                        element = document.querySelector('{tag_name.lower()}[type="text"], {tag_name.lower()}[type="password"]');
-                        if (element) console.log("Found element using type attribute");
+
+                    const element = getElementByPath("{shadow_path}") || document.querySelector("{custom_selector}");
+                    if (element) {{
+                        const originalDesc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+                        Object.defineProperty(element, 'value', {{
+                            get: function() {{ return originalDesc.get.call(this); }},
+                            set: function(val) {{
+                                originalDesc.set.call(this, val);
+                                this.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                                this.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                            }}
+                        }});
+                        element.value = "{value}";
+                        return true;
                     }}
-                    // 3. Попробуем найти по тегу и классу
-                    if (!element) {{
-                        element = document.querySelector('{tag_name.lower()}[class*="{class_name}"]');
-                        if (element) console.log("Found element using tag and class");
-                    }}
-                    // 4. Попробуем найти по custom_selector
-                    if (!element) {{
-                        element = document.querySelector('{custom_selector}');
-                        if (element) console.log("Found element using custom selector");
-                    }}
-                    return element;
+                    return false;
                 }})();
                 """
-                element = await tab.evaluate(js_code)
 
-                if element:
-                    # Используем JavaScript для очистки и ввода текста
-                    await tab.evaluate(f"""
-                    (function() {{
-                        let element = document.querySelector('{custom_selector}');
-                        if (element) {{
-                            element.value = '';
-                            element.value = '{value}';
-                            element.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                            element.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                        }}
-                    }})();
-                    """)
-                    logger.info(f"Entered text: {value} into element: {custom_selector}")
+                success = await extension_tab.evaluate(js_code)
+
+                if success:
+                    logger.info(f"Set value: {value} for element: {custom_selector}")
+                    await asyncio.sleep(1)
                     return
                 else:
-                    raise Exception("Element not found")
+                    raise Exception("Failed to find or set value for element")
             except Exception as e:
                 if attempt == max_retries - 1:
                     raise
                 logger.warning(f"Attempt {attempt + 1} failed: {str(e)}. Retrying...")
                 await asyncio.sleep(retry_delay)
 
-        logger.warning(f"Element not found after {max_retries} attempts: {custom_selector}")
+        logger.warning(f"Failed to set value after {max_retries} attempts: {custom_selector}")
     except Exception as e:
         logger.error(f"Error performing input: {e}")
         logger.error(traceback.format_exc())
@@ -159,11 +185,14 @@ async def replay_events(setup):
     browser = setup.browser
     recorded_events = load_recorded_events()
 
+    logger.info(f"Loaded {len(recorded_events)} events for replay")
+
     if not recorded_events:
         logger.warning("No recorded events found")
         return
 
     main_tab = browser.main_tab
+    logger.info("Navigating to the initial URL")
     await main_tab.get("https://miles.plumenetwork.xyz/")
     logger.info("Page loaded. Waiting for 5 seconds before starting to replay events.")
     await asyncio.sleep(5)
@@ -171,61 +200,49 @@ async def replay_events(setup):
 
     current_tab = main_tab
     extension_tabs = {}
+    previous_url = None
 
-    for event in recorded_events:
-        url = event.get('url')
-        if url:
-            if url.startswith("chrome-extension://"):
-                # Для URL-адресов расширений Chrome ищем существующую вкладку или создаем новую
-                if url not in extension_tabs:
-                    found_tab = None
-                    for tab in browser.tabs:
-                        tab_url = await tab.evaluate("window.location.href")
-                        if tab_url.startswith(url):
-                            found_tab = tab
-                            break
+    for index, event in enumerate(recorded_events):
+        try:
+            logger.info(f"Processing event {index + 1}/{len(recorded_events)}: {event['type']}")
+            url = event.get('url')
 
-                    if not found_tab:
-                        logger.info(f"Creating new tab for Chrome extension URL: {url}")
-                        new_tab = await browser.new_tab()
-                        await new_tab.get(url)
-                        extension_tabs[url] = new_tab
-                    else:
-                        logger.info(f"Found existing tab for Chrome extension URL: {url}")
-                        extension_tabs[url] = found_tab
-
-                current_tab = extension_tabs[url]
-                await current_tab.activate()
-                await current_tab.wait_for('load')
-            elif url != await current_tab.evaluate("window.location.href"):
+            # Проверяем, изменился ли URL
+            if url and url != previous_url:
+                logger.info(f"URL changed. Searching for tab with URL: {url}")
                 found_tab = None
                 for tab in browser.tabs:
-                    if await tab.evaluate("window.location.href") == url:
+                    tab_url = await tab.evaluate("window.location.href")
+                    if tab_url.startswith(url):
                         found_tab = tab
                         break
 
-                if not found_tab:
-                    new_tab = await browser.new_tab()
-                    await new_tab.get(url)
-                    current_tab = new_tab
-                else:
+                if found_tab:
                     current_tab = found_tab
+                    await current_tab.activate()
+                    logger.info(f"Switched to tab with URL: {url}")
+                else:
+                    logger.warning(f"Tab with URL {url} not found. Staying on current tab.")
 
-                await current_tab.activate()
-                await current_tab.wait_for('load')
+                previous_url = url
 
-        logger.info(f"Current URL: {await current_tab.evaluate('window.location.href')}")
+            if event['type'] == 'click':
+                logger.info("Performing click action")
+                await perform_click(current_tab, event)
+            elif event['type'] == 'input':
+                logger.info("Performing input action")
+                await perform_input(current_tab, event, browser)  # Передаем browser
+            else:
+                logger.warning(f"Unknown event type: {event['type']}")
 
-        if event['type'] == 'click':
-            await perform_click(current_tab, event)
-        elif event['type'] == 'input':
-            await perform_input(current_tab, event)
-        else:
-            logger.warning(f"Unknown event type: {event['type']}")
+            logger.info(f"Finished processing event {index + 1}")
+            await asyncio.sleep(2)  # Увеличиваем задержку между событиями
 
-        await asyncio.sleep(2)  # Увеличиваем задержку между событиями
+        except Exception as e:
+            logger.error(f"Error processing event {index + 1}: {str(e)}")
+            logger.error(traceback.format_exc())
 
-    logger.info("Finished replaying events")
+    logger.info("Finished replaying all events")
 
 
 async def main():
@@ -250,9 +267,6 @@ async def main():
             except Exception as close_error:
                 logger.error(f"Error closing browser: {close_error}")
 
-
-if __name__ == "__main__":
-    asyncio.run(main())
 
 if __name__ == "__main__":
     asyncio.run(main())
