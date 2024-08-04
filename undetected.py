@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import random
+import shutil
 import time
 import zipfile
 from datetime import datetime, timezone, timedelta
@@ -9,7 +10,7 @@ from datetime import datetime, timezone, timedelta
 import nodriver
 from nodriver import cdp
 from nodriver.core.config import Config
-from nodriver.core.util import start
+from nodriver.core.util import start, logger
 
 
 class UndetectedSetup:
@@ -89,6 +90,25 @@ class UndetectedSetup:
         ]
         return random.choice(user_agents)
 
+    async def clear_browser_data(self):
+        if self.main_tab:
+            try:
+                storage_types = ['cookies', 'local_storage', 'session_storage', 'indexeddb', 'websql', 'cache']
+                for storage_type in storage_types:
+                    await self.main_tab.send(cdp.storage.clear_data_for_origin(
+                        origin='*',
+                        storage_types=storage_type
+                    ))
+                # Очистка кэша
+                await self.main_tab.send(cdp.network.clear_browser_cache())
+                # Очистка куков
+                await self.main_tab.send(cdp.network.clear_browser_cookies())
+                logger.info("Browser data cleared successfully")
+            except Exception as e:
+                logger.error(f"Error clearing browser data: {e}")
+        else:
+            logger.warning("Main tab is not initialized, cannot clear browser data")
+
     def create_or_get_profile(self, profile_name):
         profiles_dir = os.path.join(os.getcwd(), "chrome_profiles")
         profile_path = os.path.join(profiles_dir, profile_name)
@@ -132,7 +152,7 @@ class UndetectedSetup:
             "--use-fake-device-for-media-stream",
             "--disable-infobars",
             "--disable-save-password-bubble",
-            "--ignore-certificate-errors"
+            "--ignore-certificate-errors",
         ])
 
         if self.proxy:
@@ -143,12 +163,13 @@ class UndetectedSetup:
 
     async def initialize_driver(self):
         try:
+
             self.browser = await nodriver.start(config=self.config)
             self.main_tab = self.browser.main_tab
             # await self.main_tab.send(cdp.fetch.enable(handle_auth_requests=True))
             # self.main_tab.add_handler(cdp.fetch.RequestPaused, self.handle_request_paused)
             # self.main_tab.add_handler(cdp.fetch.AuthRequired, self.handle_auth_required)
-
+            await self.clear_browser_data()
             await self.main_tab.set_window_size(width=1366, height=768)
             await self.mask_webdriver()
             await self.randomize_webgl()

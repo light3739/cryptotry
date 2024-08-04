@@ -25,6 +25,10 @@ async def inject_event_listener(tab):
     if (typeof window.lastInputEvent === 'undefined') {
         window.lastInputEvent = {};
     }
+    if (typeof window.isProcessingClick === 'undefined') {
+        window.isProcessingClick = false;
+    }
+
 
     function getComposedPath(element) {
         let path = [];
@@ -100,25 +104,77 @@ async def inject_event_listener(tab):
         }
     }
 
-    document.addEventListener('click', function(e) {
-        var element = e.composedPath()[0];
-        var eventData = {
-            type: 'click',
-            tagName: element.tagName,
-            id: element.id,
-            className: element.className,
-            shadowPath: getShadowRootPath(element),
-            customSelector: getCustomSelector(element),
-            textContent: element.textContent.trim(),
-            innerText: element.innerText.trim(),
-            text_all: getAllText(element).trim(),
-            elementDescription: getElementDescription(element),
-            time: new Date().getTime()
-        };
+    async function tryClick(element, maxAttempts = 3) {
+        for (let attempt = 0; attempt < maxAttempts; attempt++) {
+            try {
+                const rect = element.getBoundingClientRect();
+                if (rect.width > 0 && rect.height > 0) {
+                    const newEvent = new MouseEvent('click', {
+                        bubbles: true,
+                        cancelable: true,
+                        view: window
+                    });
+                    element.dispatchEvent(newEvent);
+                    return true;
+                }
+            } catch (error) {
+                console.error('Error during click attempt:', error);
+            }
+            await new Promise(resolve => setTimeout(resolve, 500));
+        }
+        return false;
+    }
 
-        window.recordedEvents.push(eventData);
-        console.log('Click event recorded:', JSON.stringify(eventData));
-        console.log('Current recordedEvents:', JSON.stringify(window.recordedEvents));
+    document.addEventListener('click', async function(e) {
+        if (window.isProcessingClick) {
+            return;
+        }
+        window.isProcessingClick = true;
+
+        try {
+            e.preventDefault();
+            e.stopPropagation();
+
+            const element = e.composedPath()[0];
+            const eventData = {
+                type: 'click',
+                tagName: element.tagName,
+                id: element.id,
+                className: element.className,
+                shadowPath: getShadowRootPath(element),
+                customSelector: getCustomSelector(element),
+                textContent: element.textContent.trim(),
+                innerText: element.innerText.trim(),
+                text_all: getAllText(element).trim(),
+                elementDescription: getElementDescription(element),
+                time: new Date().getTime()
+            };
+
+            window.recordedEvents.push(eventData);
+            console.log('Click event recorded:', JSON.stringify(eventData));
+
+            await new Promise(resolve => setTimeout(resolve, 1000));
+
+            const clickSuccess = await tryClick(element);
+            if (!clickSuccess) {
+                console.error('Failed to perform click after multiple attempts');
+            }
+
+            if (element.tagName.toLowerCase() === 'a' && element.href) {
+                window.location.href = element.href;
+            }
+
+            if (element.tagName.toLowerCase() === 'button' && element.type === 'submit') {
+                const form = element.closest('form');
+                if (form) {
+                    form.submit();
+                }
+            }
+        } catch (error) {
+            console.error('Error processing click:', error);
+        } finally {
+            window.isProcessingClick = false;
+        }
     }, true);
 
     document.addEventListener('input', function(e) {
@@ -193,7 +249,6 @@ async def is_extension_tab(tab):
 async def process_extension_event(event, tab):
     if event['type'] == 'click':
         logger.info(f"Extension click event: {event['elementDescription']}")
-        # Здесь можно добавить специфическую логику для обработки кликов в расширении
     elif event['type'] == 'input':
         logger.info(f"Extension input event: {event['value']}")
 
@@ -201,8 +256,10 @@ async def process_extension_event(event, tab):
 async def process_event(event, tab, recorder):
     try:
         if event['type'] == 'click':
-            logger.info(f"Click event: {event.get('elementDescription', 'Unknown element')}")
+            logger.info(f"Processing click event: {event.get('elementDescription', 'Unknown element')}")
             recorder.events.append(event)
+            await asyncio.sleep(1.5)  # Увеличено время ожидания
+            logger.info(f"Click event processed: {event.get('elementDescription', 'Unknown element')}")
         elif event['type'] == 'input':
             logger.info(f"Input event: {event.get('value', 'No value')}")
             recorder.events.append(event)
@@ -211,6 +268,7 @@ async def process_event(event, tab, recorder):
         logger.info(f"Total events recorded: {len(recorder.events)}")
     except Exception as e:
         logger.error(f"Error processing event: {e}")
+        logger.error(traceback.format_exc())
 
 
 async def activate_tab_with_delay(tab):
@@ -227,8 +285,8 @@ async def record_events(setup, recorder, stop_event):
         await inject_event_listener(main_tab)
         recorder.tabs.append(main_tab)
 
-        print("Recording started. Perform your actions.")
-        print("Press 'q' and Enter to stop recording.")
+        logger.info("Recording started. Perform your actions.")
+        logger.info("Press 'q' and Enter to stop recording.")
 
         while not stop_event.is_set():
             try:
