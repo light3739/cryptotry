@@ -135,25 +135,32 @@ class UndetectedSetup:
 
         return profile_path, metadata["user_agent"]
 
+
     def setup_config(self):
-        config = Config()
-        config.user_data_dir = self.profile_path
-        config.headless = False
-        config.lang = 'de-DE'
-        config.sandbox = False
-        config.browser_args.extend([
-            "--disable-dev-shm-usage",
-            "--disable-popup-blocking",
-            "--disable-blink-features=AutomationControlled",
-            f"--user-data-dir={self.profile_path}",
-            "--profile-directory=Default",
-            "--timezone=Europe/Berlin",
-            "--use-fake-ui-for-media-stream",
-            "--use-fake-device-for-media-stream",
-            "--disable-infobars",
-            "--disable-save-password-bubble",
-            "--ignore-certificate-errors",
-        ])
+        config = Config(
+            user_data_dir=self.profile_path,
+            headless=False,
+            lang='en-US,en,de-DE,de'  # Set accepted languages here
+        )
+
+        config.add_argument('--disable-gpu')
+        config.add_argument('--disable-cookies')
+        config.add_argument('--clear-token-service')
+        config.add_argument('--purge-local-storage-on-exit')
+
+        # Clear cookies and cache
+        config.add_argument('--disable-cache')
+        config.add_argument('--disable-application-cache')
+        config.add_argument('--disable-offline-load-stale-cache')
+        config.add_argument('--disk-cache-size=0')
+        config.add_argument('--clear-cookies')
+        config.add_argument('--clear-cache')
+
+        # Set time zone for Germany
+        config.add_argument('--timezone="Europe/Berlin"')
+
+        # Disable translation
+        config.add_argument('--disable-translate')
 
         if self.proxy:
             extension_path = self.create_proxy_extension()
@@ -163,12 +170,12 @@ class UndetectedSetup:
 
     async def initialize_driver(self):
         try:
-
             self.browser = await nodriver.start(config=self.config)
             self.main_tab = self.browser.main_tab
-            # await self.main_tab.send(cdp.fetch.enable(handle_auth_requests=True))
-            # self.main_tab.add_handler(cdp.fetch.RequestPaused, self.handle_request_paused)
-            # self.main_tab.add_handler(cdp.fetch.AuthRequired, self.handle_auth_required)
+
+            # Clear cookies
+            await self.browser.cookies.clear()
+
             await self.clear_browser_data()
             await self.main_tab.set_window_size(width=1366, height=768)
             await self.mask_webdriver()
