@@ -185,8 +185,8 @@ class ZoomableGraphicsView(QGraphicsView):
                     # Удаляем элемент со сцены
                     self.scene().removeItem(item)
 
-            # Обновляем JSON-файл
             self.event_viewer.save_events()
+            self.event_viewer.redraw_scene()
 
     def keyReleaseEvent(self, event):
         if event.key() == Qt.Key.Key_Space:
@@ -243,7 +243,10 @@ class EventViewer(QMainWindow):
             json.dump(self.events, file, indent=2)
 
     def remove_event(self, event_data):
+        event_id = event_data.get('id', str(self.events.index(event_data)))
         self.events.remove(event_data)
+        if event_id in self.item_map:
+            del self.item_map[event_id]
 
     def get_event_color(self, event_type):
         color_map = {
@@ -253,10 +256,19 @@ class EventViewer(QMainWindow):
         }
         return color_map.get(event_type, QColor(200, 200, 200))
 
+    def redraw_scene(self):
+        # Очищаем сцену
+        self.scene.clear()
+        # Заново отображаем события
+        self.display_events()
+
     def display_events(self):
         y_offset = 0
         prev_item = None
+        self.item_map = {}  # Словарь для хранения соответствия между event_id и MovableEllipseItem
+
         for i, event in enumerate(self.events):
+            event_id = event.get('id', str(i))  # Используем 'id' из события или создаем свой
             event_type = event.get('type', 'Unknown')
             if event_type == 'input':
                 description = f"{event.get('value', 'No value')}"
@@ -278,6 +290,7 @@ class EventViewer(QMainWindow):
             text_item.setPos(text_x, text_y)
 
             self.scene.addItem(ellipse)
+            self.item_map[event_id] = ellipse
 
             if prev_item:
                 arrow = Arrow(prev_item, ellipse)
@@ -285,7 +298,9 @@ class EventViewer(QMainWindow):
 
             prev_item = ellipse
             y_offset += 100
+
         self.save_events()
+
         # Устанавливаем размер сцены намного больше, чем фактическое содержимое
         rect = self.scene.itemsBoundingRect()
         expanded_rect = rect.adjusted(-1000, -1000, 1000, 1000)
