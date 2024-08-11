@@ -7,7 +7,7 @@ from PyQt6.QtGui import QColor, QPolygonF, QPen, QFont, QBrush, QPainter, QLinea
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QGraphicsScene, QGraphicsView,
                              QVBoxLayout, QWidget, QGraphicsEllipseItem, QGraphicsTextItem,
                              QGraphicsLineItem, QGraphicsItem,
-                             QToolTip, QMessageBox)
+                             QToolTip, QMessageBox, QInputDialog)
 
 
 class MovableEllipseItem(QGraphicsEllipseItem):
@@ -159,6 +159,10 @@ class ZoomableGraphicsView(QGraphicsView):
             self.space_pressed = True
             self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
             self.viewport().setCursor(Qt.CursorShape.OpenHandCursor)
+        elif event.key() == Qt.Key.Key_A:
+            self.event_viewer.add_new_event()
+        elif event.key() == Qt.Key.Key_C:
+            self.event_viewer.change_arrow_connections()
         super().keyPressEvent(event)
 
     def delete_selected_items(self):
@@ -261,6 +265,72 @@ class EventViewer(QMainWindow):
         self.scene.clear()
         # Заново отображаем события
         self.display_events()
+
+    def add_new_event(self):
+        event_type, ok = QInputDialog.getItem(self, 'New Event', 'Select event type:', ['click', 'input'], 0, False)
+        if ok and event_type:
+            if event_type == 'click':
+                element_description, ok = QInputDialog.getText(self, 'New Event', 'Enter element description:')
+                if ok and element_description:
+                    url, ok = QInputDialog.getText(self, 'New Event', 'Enter URL:')
+                    if ok and url:
+                        event_data = {
+                            'type': event_type,
+                            'elementDescription': element_description,
+                            'url': url,
+                            'id': str(len(self.events))
+                        }
+                        self.events.append(event_data)
+                        self.save_events()
+                        self.redraw_scene()
+            elif event_type == 'input':
+                value, ok = QInputDialog.getText(self, 'New Event', 'Enter input value:')
+                if ok and value:
+                    url, ok = QInputDialog.getText(self, 'New Event', 'Enter URL:')
+                    if ok and url:
+                        event_data = {
+                            'type': event_type,
+                            'value': value,
+                            'url': url,
+                            'id': str(len(self.events))
+                        }
+                        self.events.append(event_data)
+                        self.save_events()
+                        self.redraw_scene()
+
+    def change_arrow_connections(self):
+        selected_items = self.scene.selectedItems()
+        if len(selected_items) == 2:
+            start_item = selected_items[0]
+            end_item = selected_items[1]
+            if isinstance(start_item, MovableEllipseItem) and isinstance(end_item, MovableEllipseItem):
+                start_event = start_item.event_data
+                end_event = end_item.event_data
+
+                # Удаляем старые стрелки
+                for arrow in start_item.arrows[:]:
+                    if arrow.endItem == end_item:
+                        self.scene.removeItem(arrow)
+                        start_item.arrows.remove(arrow)
+                        end_item.arrows.remove(arrow)
+
+                # Обновляем порядок элементов в JSON
+                start_index = self.events.index(start_event)
+                end_index = self.events.index(end_event)
+
+                if start_index < end_index:
+                    # Перемещаем end_event на позицию после start_event
+                    self.events.insert(start_index + 1, self.events.pop(end_index))
+                else:
+                    # Перемещаем start_event на позицию перед end_event
+                    self.events.insert(end_index, self.events.pop(start_index))
+
+                # Создаем новую стрелку
+                new_arrow = Arrow(start_item, end_item)
+                self.scene.addItem(new_arrow)
+
+                self.save_events()
+                self.redraw_scene()
 
     def display_events(self):
         y_offset = 0

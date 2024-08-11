@@ -108,7 +108,7 @@ async def inject_event_listener(tab):
         for (let attempt = 0; attempt < maxAttempts; attempt++) {
             try {
                 const rect = element.getBoundingClientRect();
-                if (rect.width > 0 && rect.height > 0) {
+                if (rect.width > 0 && rect.height > 0 && isElementVisible(element) && isElementEnabled(element)) {
                     const newEvent = new MouseEvent('click', {
                         bubbles: true,
                         cancelable: true,
@@ -124,17 +124,26 @@ async def inject_event_listener(tab):
         }
         return false;
     }
+    
+    function isElementVisible(element) {
+        return element.offsetWidth > 0 && element.offsetHeight > 0;
+    }
+    
+    function isElementEnabled(element) {
+        return !element.disabled;
+    }
+
 
     document.addEventListener('click', async function(e) {
         if (window.isProcessingClick) {
             return;
         }
         window.isProcessingClick = true;
-
+    
         try {
             e.preventDefault();
-            e.stopPropagation();
-
+            e.stopImmediatePropagation();
+    
             const element = e.composedPath()[0];
             const eventData = {
                 type: 'click',
@@ -149,21 +158,42 @@ async def inject_event_listener(tab):
                 elementDescription: getElementDescription(element),
                 time: new Date().getTime()
             };
-
+    
             window.recordedEvents.push(eventData);
             console.log('Click event recorded:', JSON.stringify(eventData));
-
-            await new Promise(resolve => setTimeout(resolve, 1000));
-
+    
+            // Отображение визуального эффекта для обработанной кнопки
+            element.style.backgroundColor = 'rgba(0, 255, 0, 0.3)';
+            setTimeout(() => {
+                element.style.backgroundColor = '';
+            }, 500);
+    
+            // Отображение уведомления об обработке кнопки
+            const notification = document.createElement('div');
+            notification.textContent = 'Button processed';
+            notification.style.position = 'fixed';
+            notification.style.top = '10px';
+            notification.style.right = '10px';
+            notification.style.padding = '10px';
+            notification.style.backgroundColor = 'rgba(0, 255, 0, 0.8)';
+            notification.style.color = 'white';
+            notification.style.zIndex = '9999';
+            document.body.appendChild(notification);
+            setTimeout(() => {
+                document.body.removeChild(notification);
+            }, 1000);
+    
+            await new Promise(resolve => setTimeout(resolve, 2000));
+    
             const clickSuccess = await tryClick(element);
             if (!clickSuccess) {
                 console.error('Failed to perform click after multiple attempts');
             }
-
+    
             if (element.tagName.toLowerCase() === 'a' && element.href) {
                 window.location.href = element.href;
             }
-
+    
             if (element.tagName.toLowerCase() === 'button' && element.type === 'submit') {
                 const form = element.closest('form');
                 if (form) {
@@ -176,6 +206,7 @@ async def inject_event_listener(tab):
             window.isProcessingClick = false;
         }
     }, true);
+
 
     document.addEventListener('input', function(e) {
         var element = e.target;
@@ -258,7 +289,7 @@ async def process_event(event, tab, recorder):
         if event['type'] == 'click':
             logger.info(f"Processing click event: {event.get('elementDescription', 'Unknown element')}")
             recorder.events.append(event)
-            await asyncio.sleep(1.5)  # Увеличено время ожидания
+            await asyncio.sleep(2)  # Увеличено время ожидания
             logger.info(f"Click event processed: {event.get('elementDescription', 'Unknown element')}")
         elif event['type'] == 'input':
             logger.info(f"Input event: {event.get('value', 'No value')}")
