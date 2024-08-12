@@ -2,6 +2,9 @@ import asyncio
 import json
 import logging
 import traceback
+from collections import deque
+from dataclasses import asdict, dataclass
+from typing import Dict, Any, List
 
 from undetected import UndetectedSetup
 
@@ -9,12 +12,87 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class Event:
+    type: str
+    url: str
+    timestamp: float
+    details: Dict[str, Any]
+
+
+class EventBuffer:
+    def __init__(self, max_size: int = 1000):
+        self.buffer = deque(maxlen=max_size)
+
+    def add_event(self, event: Event):
+        self.buffer.append(event)
+
+    def get_events(self) -> List[Event]:
+        events = list(self.buffer)
+        self.buffer.clear()
+        return events
+
+
+class TabManager:
+    def __init__(self):
+        self.tabs = {}
+        self.extension_tabs = {}
+
+    async def add_tab(self, tab):
+        url = await tab.evaluate("window.location.href")
+        if url.startswith("chrome-extension://"):
+            self.extension_tabs[url] = tab
+        else:
+            self.tabs[url] = tab
+        await inject_event_listener(tab)
+
+    async def remove_inactive_tabs(self, current_tabs):
+        self.tabs = {url: tab for url, tab in self.tabs.items() if tab in current_tabs}
+        self.extension_tabs = {url: tab for url, tab in self.extension_tabs.items() if tab in current_tabs}
+
+    def get_all_tabs(self):
+        return list(self.tabs.values()) + list(self.extension_tabs.values())
+
+
 class EventRecorder:
     def __init__(self):
-        self.events = []
-        self.tabs = []
-        self.extension_tabs = {}
-        self.last_input = {}
+        self.event_buffer = EventBuffer()
+        self.tab_manager = TabManager()
+
+    async def process_tab(self, tab):
+        try:
+            current_url = await tab.evaluate("window.location.href")
+            events, last_input = await get_recorded_events(tab)
+
+            for event_data in events:
+                event = Event(
+                    type=event_data['type'],
+                    url=current_url,
+                    timestamp=event_data['time'],
+                    details=event_data
+                )
+                self.event_buffer.add_event(event)
+
+            if last_input:
+                for selector, input_event in last_input.items():
+                    event = Event(
+                        type='input',
+                        url=current_url,
+                        timestamp=input_event['time'],
+                        details=input_event
+                    )
+                    self.event_buffer.add_event(event)
+
+            logger.info(f"Processed {len(events)} events for tab: {current_url}")
+        except Exception as tab_error:
+            logger.error(f"Error processing tab: {tab_error}")
+
+    async def save_events(self):
+        events = self.event_buffer.get_events()
+        if events:
+            with open("recorded_events.json", "a") as f:
+                json.dump([asdict(event) for event in events], f, indent=2)
+            logger.info(f"Saved {len(events)} events to recorded_events.json")
 
 
 async def inject_event_listener(tab):
@@ -248,13 +326,9 @@ async def get_recorded_events(tab, max_retries=3):
             last_input = await tab.evaluate("window.lastInputEvent")
 
             if events is None:
-                logger.warning("window.recordedEvents is None")
                 events = []
             if last_input is None:
-                logger.warning("window.lastInputEvent is None")
                 last_input = {}
-
-            logger.info(f"Retrieved events: {len(events)}, last input: {'present' if last_input else 'absent'}")
 
             if events:
                 await tab.evaluate("window.recordedEvents = []")
@@ -269,52 +343,13 @@ async def get_recorded_events(tab, max_retries=3):
     return [], {}
 
 
-async def is_extension_tab(tab):
-    try:
-        url = await tab.evaluate("window.location.href")
-        return url.startswith("chrome-extension://")
-    except:
-        return False
-
-
-async def process_extension_event(event, tab):
-    if event['type'] == 'click':
-        logger.info(f"Extension click event: {event['elementDescription']}")
-    elif event['type'] == 'input':
-        logger.info(f"Extension input event: {event['value']}")
-
-
-async def process_event(event, tab, recorder):
-    try:
-        if event['type'] == 'click':
-            logger.info(f"Processing click event: {event.get('elementDescription', 'Unknown element')}")
-            recorder.events.append(event)
-            await asyncio.sleep(2)  # Увеличено время ожидания
-            logger.info(f"Click event processed: {event.get('elementDescription', 'Unknown element')}")
-        elif event['type'] == 'input':
-            logger.info(f"Input event: {event.get('value', 'No value')}")
-            recorder.events.append(event)
-        else:
-            logger.warning(f"Unknown event type: {event['type']}")
-        logger.info(f"Total events recorded: {len(recorder.events)}")
-    except Exception as e:
-        logger.error(f"Error processing event: {e}")
-        logger.error(traceback.format_exc())
-
-
-async def activate_tab_with_delay(tab):
-    await tab.activate()
-    await asyncio.sleep(0.5)  # Добавляем небольшую задержку после активации
-
-
 async def record_events(setup, recorder, stop_event):
     browser = setup.browser
     main_tab = browser.main_tab
 
     try:
         await main_tab.get("https://miles.plumenetwork.xyz/")
-        await inject_event_listener(main_tab)
-        recorder.tabs.append(main_tab)
+        await recorder.tab_manager.add_tab(main_tab)
 
         logger.info("Recording started. Perform your actions.")
         logger.info("Press 'q' and Enter to stop recording.")
@@ -323,42 +358,14 @@ async def record_events(setup, recorder, stop_event):
             try:
                 current_tabs = browser.tabs
                 for tab in current_tabs:
-                    if tab not in recorder.tabs and tab not in recorder.extension_tabs.values():
-                        try:
-                            url = await tab.evaluate("window.location.href")
-                            if url.startswith("chrome-extension://"):
-                                logger.info(f"New extension tab detected: {url}")
-                                recorder.extension_tabs[url] = tab
-                            else:
-                                logger.info(f"New regular tab detected: {url}")
-                                recorder.tabs.append(tab)
-                            await inject_event_listener(tab)
-                        except Exception as inject_error:
-                            logger.error(f"Error injecting event listener: {inject_error}")
+                    if tab not in recorder.tab_manager.get_all_tabs():
+                        await recorder.tab_manager.add_tab(tab)
 
-                for tab in recorder.tabs + list(recorder.extension_tabs.values()):
-                    try:
-                        current_url = await tab.evaluate("window.location.href")
-                        logger.info(f"Processing tab: {current_url}")
-                        events, last_input = await get_recorded_events(tab)
-                        if events or last_input:
-                            logger.info(
-                                f"Retrieved {len(events)} events and {'has' if last_input else 'no'} last input for tab: {current_url}")
-                            for event in events:
-                                event['url'] = current_url
-                                await process_event(event, tab, recorder)
-                            if last_input:
-                                for selector, input_event in last_input.items():
-                                    input_event['url'] = current_url
-                                    await process_event(input_event, tab, recorder)
-                        else:
-                            logger.info(f"No events retrieved for tab: {current_url}")
-                    except Exception as tab_error:
-                        logger.error(f"Error processing tab: {tab_error}")
+                for tab in recorder.tab_manager.get_all_tabs():
+                    await recorder.process_tab(tab)
 
-                recorder.tabs = [tab for tab in recorder.tabs if tab in current_tabs]
-                recorder.extension_tabs = {url: tab for url, tab in recorder.extension_tabs.items() if
-                                           tab in current_tabs}
+                await recorder.tab_manager.remove_inactive_tabs(current_tabs)
+                await recorder.save_events()
 
             except Exception as loop_error:
                 logger.error(f"Error in main loop: {loop_error}")
@@ -368,9 +375,6 @@ async def record_events(setup, recorder, stop_event):
     except Exception as e:
         logger.error(f"Error in record_events: {e}")
         logger.error(traceback.format_exc())
-
-    finally:
-        logger.info(f"Recording finished. Total events recorded: {len(recorder.events)}")
 
 
 async def input_listener(stop_event):
@@ -407,13 +411,7 @@ async def main():
         if setup.browser:
             await setup.close_browser()
 
-        # Добавляем оставшиеся события ввода в конец списка событий
-        for input_event in recorder.last_input.values():
-            recorder.events.append(input_event)
-
-        with open("recorded_events.json", "w") as f:
-            json.dump(recorder.events, f, indent=2)
-        logger.info(f"Recorded {len(recorder.events)} events and saved to recorded_events.json")
+        logger.info("Recording finished.")
 
 
 if __name__ == "__main__":
