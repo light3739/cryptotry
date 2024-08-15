@@ -1,0 +1,38 @@
+{
+  "events": [
+    {
+      "type": "click",
+      "url": "https://miles.plumenetwork.xyz/",
+      "details": {
+        "type": "click",
+        "tagName": "BUTTON",
+        "id": "",
+        "className": "chakra-button css-1nhw4tw",
+        "shadowPath": "button.chakra-button.css-1nhw4tw > div.css-1r2h8lc > div.css-4fx7jo > div.mainContentWrapper.css-ngqgbr > body.__className_aadbfa.pb-[300px].chakra-ui-light > html > document > window",
+        "customSelector": ".chakra-button.css-1nhw4tw",
+        "textContent": "Connect Wallet",
+        "innerText": "Connect Wallet",
+        "text_all": "Connect Wallet",
+        "elementDescription": "Connect Wallet"
+      }
+    },
+    {
+      "type": "input",
+      "url": "https://example.com",
+      "details": {
+        "type": "input",
+        "tagName": "INPUT",
+        "value": "123123123"
+      }
+    },
+    {
+      "type": "click",
+      "url": "https://example.com",
+      "details": {
+        "type": "click",
+        "tagName": "BUTTON",
+        "elementDescription": "test"
+      }
+    }
+  ]
+}
