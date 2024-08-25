@@ -26,7 +26,7 @@ class Project:
                         data = json.load(f)
                     config_name = os.path.splitext(filename)[0]  # Remove .json extension
                     logger.debug(f"Loaded data for configuration: {config_name}")
-                    self.configurations.append(Configuration(config_name, data))
+                    self.configurations.append(Configuration(config_name, data, file_path))
                 except Exception as e:
                     logger.error(f"Error loading {file_path}: {str(e)}")
         logger.debug(f"Loaded {len(self.configurations)} configurations")
@@ -39,6 +39,8 @@ class Project:
         logger.debug(f"Saved {len(self.configurations)} configurations")
 
     def add_configuration(self, config):
+        file_path = os.path.join(self.path, f"{config.name}.json")
+        config.file_path = file_path  # Добавляем file_path к конфигурации
         self.configurations.append(config)
         self.save_configurations()
 

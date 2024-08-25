@@ -1,17 +1,15 @@
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QListWidget, QPushButton, QHBoxLayout, QInputDialog, QMessageBox
 from PyQt6.QtCore import pyqtSignal
-
 from src.models.configuration import Configuration
 from src.models.project import Project
-from src.views.configuration_view import ConfigurationView
-
+from src.views.configuration_window import ConfigurationWindow
 import logging
 
 logger = logging.getLogger(__name__)
 
 
 class ProjectView(QWidget):
-    configuration_selected = pyqtSignal(object)  # Определяем сигнал здесь
+    configuration_selected = pyqtSignal(object)
 
     def __init__(self, project: Project):
         super().__init__()
@@ -31,63 +29,51 @@ class ProjectView(QWidget):
         self.layout.addLayout(self.button_layout)
         logger.debug("Added buttons to layout")
 
-        self.config_view = ConfigurationView()
-        self.layout.addWidget(self.config_view)
-        logger.debug("Added ConfigurationView to layout")
-
         self.update_config_list()
         logger.debug("Updated config list")
         self.setup_connections()
         logger.debug("Setup connections completed")
+
+        self.config_windows = []  # Список для хранения открытых окон конфигураций
 
     def update_config_list(self):
         try:
             self.config_list.clear()
             for config in self.project.configurations:
                 self.config_list.addItem(config.name)
-            logger.debug(f"Updated config list. Current configurations: {[c.name for c in self.project.configurations]}")
+            logger.debug(
+                f"Updated config list. Current configurations: {[c.name for c in self.project.configurations]}")
         except Exception as e:
             logger.exception("Error in update_config_list")
             QMessageBox.critical(self, "Error", f"Failed to update configuration list: {str(e)}")
-
 
     def refresh_view(self):
         try:
             self.update_config_list()
             if self.project.configurations:
                 self.config_list.setCurrentRow(0)
-                current_item = self.config_list.item(0)
-                if current_item:
-                    self.on_config_selected(current_item, None)
-                else:
-                    self.config_view.set_configuration(None)
-            else:
-                self.config_view.set_configuration(None)
-                self.config_list.clear()
             logger.debug("View refreshed successfully")
         except Exception as e:
             logger.exception("Error in refresh_view")
             QMessageBox.critical(self, "Error", f"Failed to refresh view: {str(e)}")
 
-
-
     def setup_connections(self):
-        self.config_list.currentItemChanged.connect(self.on_config_selected)  # type: ignore
-        self.add_config_button.clicked.connect(self.add_configuration)  # type: ignore
-        self.remove_config_button.clicked.connect(self.remove_configuration)  # type: ignore
+        self.config_list.itemDoubleClicked.connect(self.on_config_double_clicked)
+        self.add_config_button.clicked.connect(self.add_configuration)
+        self.remove_config_button.clicked.connect(self.remove_configuration)
 
-    def on_config_selected(self, current, previous):
-        if current:
-            row = self.config_list.row(current)
-            if 0 <= row < len(self.project.configurations):
-                config = self.project.configurations[row]
-                self.config_view.set_configuration(config)
-                self.configuration_selected.emit(config)
-            else:
-                logger.warning(f"Invalid configuration index: {row}")
-                self.config_view.set_configuration(None)
-        else:
-            self.config_view.set_configuration(None)
+    def on_config_double_clicked(self, item):
+        row = self.config_list.row(item)
+        if 0 <= row < len(self.project.configurations):
+            config = self.project.configurations[row]
+            self.open_configuration_window(config)
+            logger.debug(f"Configuration double-clicked: {config.name}")
+
+    def open_configuration_window(self, configuration):
+        config_window = ConfigurationWindow(configuration)
+        config_window.show()
+        self.config_windows.append(config_window)
+        config_window.destroyed.connect(lambda: self.config_windows.remove(config_window))
 
     def add_configuration(self):
         name, ok = QInputDialog.getText(self, 'New Configuration', 'Enter configuration name:')
@@ -96,7 +82,6 @@ class ProjectView(QWidget):
             self.project.add_configuration(new_config)
             self.update_config_list()
             logger.debug(f"Added new configuration: {name}")
-
 
     def remove_configuration(self):
         try:

@@ -1,22 +1,27 @@
+import logging
+
 from ..models.configuration import Configuration
-from ..views.configuration_view import ConfigurationView
+
+logger = logging.getLogger(__name__)
 
 
 class ConfigurationController:
-    def __init__(self, configuration: Configuration, view: ConfigurationView):
+    def __init__(self, configuration: Configuration, window):
         self.configuration = configuration
-        self.view = view
+        self.window = window
         self.setup_connections()
 
     def setup_connections(self):
-        # Здесь вы можете подключить сигналы от view к методам контроллера
+        # Здесь вы можете подключить сигналы от окна к методам контроллера
         pass
 
     def update_view(self):
-        self.view.set_configuration(self.configuration)
+        self.window.display_events()
 
     def add_event(self, event_data):
+        logger.debug(f"Adding event: {event_data}")
         self.configuration.add_event(event_data)
+        logger.debug(f"Configuration events after adding: {self.configuration.data['events']}")
         self.update_view()
 
     def remove_event(self, event_data):
@@ -28,5 +33,4 @@ class ConfigurationController:
         self.update_view()
 
     def save_configuration(self):
-        # Здесь может быть логика сохранения конфигурации
-        pass
+        self.window.save_configuration()
